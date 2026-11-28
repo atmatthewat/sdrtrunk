@@ -32,6 +32,8 @@ public class ChannelFilterDesigner
     private static final Logger LOGGER = LoggerFactory.getLogger(ChannelFilterDesigner.class);
     private static final double MAXIMUM_STOP_BAND_DB = -40.0;
     private static final double MAXIMUM_PASS_BAND_DB = 1.0;
+    //designRemezLowPass() stop band limit: its 0.01 ripple design is about 40 dB down, so this leaves margin
+    private static final double MAXIMUM_REMEZ_LOW_PASS_STOP_BAND_DB = -30.0;
     private static final int FILTER_RESPONSE_CHECK_POINTS = 1024;
     private static final int FALLBACK_FILTER_SIZING_ATTENUATION_DB = 75;
     private static final int FALLBACK_FILTER_MAXIMUM_ATTENUATION_DB = 150;
@@ -82,18 +84,69 @@ public class ChannelFilterDesigner
             LOGGER.info("Unable to use remez filter designer for sample rate [" + sampleRate + "] pass band stop [" +
                     passBandStop + "] and stop band start [" + stopBandStart +
                     "] - will proceed using simple low pass filter design");
-            //Center the cutoff so the bandwidth matches the remez design and size the filter to meet the response limits.
-            for(int attenuation = FALLBACK_FILTER_SIZING_ATTENUATION_DB; attenuation <= FALLBACK_FILTER_MAXIMUM_ATTENUATION_DB;
-                attenuation += FALLBACK_FILTER_ATTENUATION_STEP_DB)
-            {
-                int length = FilterFactory.getLowPass(sampleRate, passBandStop, stopBandStart, attenuation,
-                        WindowType.HAMMING, true).length;
-                coefficients = FilterFactory.getLowPass(sampleRate, (passBandStop + stopBandStart) / 2, length, WindowType.HAMMING);
+            coefficients = designWindowedSinc(sampleRate, passBandStop, stopBandStart);
+        }
 
-                if(isValidFilterResponse(coefficients, sampleRate, passBandStop, stopBandStart))
-                {
-                    break;
-                }
+        return coefficients;
+    }
+
+    /**
+     * Designs a remez low-pass filter (FilterFactory.getRemezLowPass(), 0.01 pass and stop band ripple, so about 40 dB
+     * of stop band attenuation) and checks its response.  The remez designer can converge on a filter with a large
+     * response spike outside of its design grid points, so where the design fails, or its pass band isn't within 1 dB
+     * or its stop band isn't at least 30 dB down, a windowed sinc filter sized to meet the response limits is used in
+     * its place.  Where the remez design works, the filter is the remez design.
+     *
+     * @param sampleRate of the samples to filter in hertz
+     * @param passFrequency pass band edge in hertz
+     * @param stopFrequency stop band edge in hertz
+     * @return filter coefficients
+     */
+    public static float[] designRemezLowPass(double sampleRate, double passFrequency, double stopFrequency)
+    {
+        int passBandStop = (int)passFrequency;
+        int stopBandStart = (int)stopFrequency;
+        float[] coefficients = null;
+
+        try
+        {
+            coefficients = FilterFactory.getRemezLowPass(sampleRate, passFrequency, stopFrequency);
+        }
+        catch(IllegalStateException ise)
+        {
+            LOGGER.warn("Couldn't design remez low pass filter for sample rate [" + sampleRate +
+                    "] pass frequency [" + passFrequency + "] and stop frequency [" + stopFrequency + "]");
+        }
+
+        if(coefficients != null && isValidFilterResponse(coefficients, sampleRate, passBandStop, stopBandStart,
+            MAXIMUM_REMEZ_LOW_PASS_STOP_BAND_DB))
+        {
+            return coefficients;
+        }
+
+        LOGGER.info("Unable to use remez low pass filter for sample rate [" + sampleRate + "] pass frequency [" +
+                passFrequency + "] and stop frequency [" + stopFrequency + "] - using a windowed sinc filter");
+        return designWindowedSinc(sampleRate, passBandStop, stopBandStart);
+    }
+
+    /**
+     * Windowed sinc filter with the cutoff centered between the pass and stop edges, so the bandwidth matches a remez
+     * design, sized to meet the response limits (isValidFilterResponse()).
+     */
+    private static float[] designWindowedSinc(double sampleRate, int passBandStop, int stopBandStart)
+    {
+        float[] coefficients = null;
+
+        for(int attenuation = FALLBACK_FILTER_SIZING_ATTENUATION_DB; attenuation <= FALLBACK_FILTER_MAXIMUM_ATTENUATION_DB;
+            attenuation += FALLBACK_FILTER_ATTENUATION_STEP_DB)
+        {
+            int length = FilterFactory.getLowPass(sampleRate, passBandStop, stopBandStart, attenuation,
+                    WindowType.HAMMING, true).length;
+            coefficients = FilterFactory.getLowPass(sampleRate, (passBandStop + stopBandStart) / 2, length, WindowType.HAMMING);
+
+            if(isValidFilterResponse(coefficients, sampleRate, passBandStop, stopBandStart))
+            {
+                break;
             }
         }
 
@@ -110,6 +163,15 @@ public class ChannelFilterDesigner
      */
     public static boolean isValidFilterResponse(float[] coefficients, double sampleRate, int passBandStop, int stopBandStart)
     {
+        return isValidFilterResponse(coefficients, sampleRate, passBandStop, stopBandStart, MAXIMUM_STOP_BAND_DB);
+    }
+
+    /**
+     * Checks the frequency response of the low-pass filter, relative to the response at DC, with the stop band limit.
+     */
+    private static boolean isValidFilterResponse(float[] coefficients, double sampleRate, int passBandStop,
+                                                 int stopBandStart, double maximumStopBandDb)
+    {
         double dc = getResponseDb(coefficients, 0.0, sampleRate);
         double nyquist = sampleRate / 2.0;
 
@@ -119,7 +181,7 @@ public class ChannelFilterDesigner
             double response = getResponseDb(coefficients, frequency, sampleRate) - dc;
 
             if((frequency <= passBandStop && response > MAXIMUM_PASS_BAND_DB) ||
-               (frequency >= stopBandStart && response > MAXIMUM_STOP_BAND_DB))
+               (frequency >= stopBandStart && response > maximumStopBandDb))
             {
                 return false;
             }

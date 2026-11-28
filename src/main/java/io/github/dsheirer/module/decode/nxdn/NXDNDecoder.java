@@ -20,6 +20,7 @@
 package io.github.dsheirer.module.decode.nxdn;
 
 import com.google.common.eventbus.Subscribe;
+import io.github.dsheirer.dsp.filter.ChannelFilterDesigner;
 import io.github.dsheirer.dsp.filter.FilterFactory;
 import io.github.dsheirer.dsp.filter.decimate.DecimationFilterFactory;
 import io.github.dsheirer.dsp.filter.decimate.IRealDecimationFilter;
@@ -125,7 +126,7 @@ public class NXDNDecoder extends FeedbackDecoder implements IByteBufferProvider,
                                                                       double stopFrequency, int symbolRate)
     {
         return new ChannelSpecification.ChannelFilter(sampleRate, passFrequency, stopFrequency,
-            rate -> FilterFactory.getRemezLowPass((float)rate, passFrequency, stopFrequency),
+            rate -> ChannelFilterDesigner.designRemezLowPass((float)rate, passFrequency, stopFrequency),
             rate -> isUndecimated(rate, symbolRate));
     }
 
@@ -190,8 +191,8 @@ public class NXDNDecoder extends FeedbackDecoder implements IByteBufferProvider,
         mPulseShapingFilter = new RealFIRFilter(taps);
 
         ChannelSpecification channel = mConfig.getChannelSpecification();
-        float[] basebandTaps = FilterFactory.getRemezLowPass(decimatedSampleRate, channel.getPassFrequency(),
-                channel.getStopFrequency());
+        float[] basebandTaps = ChannelFilterDesigner.designRemezLowPass(decimatedSampleRate,
+                channel.getPassFrequency(), channel.getStopFrequency());
         mBasebandFilterI = FilterFactory.getRealFilter(basebandTaps);
         mBasebandFilterQ = FilterFactory.getRealFilter(basebandTaps);
 
