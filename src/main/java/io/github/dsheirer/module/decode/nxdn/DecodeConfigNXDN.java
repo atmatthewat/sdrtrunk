@@ -39,8 +39,11 @@ public class DecodeConfigNXDN extends DecodeConfigJMBE
     private boolean mIgnoreDataCalls = false;
     private boolean mIgnoreEncryptedCalls = false;
 
-    private static final ChannelSpecification CHANNEL_4800 = new ChannelSpecification(12000.0, 6250, 3000.0, 3125.0,
-        NXDNDecoder.getChannelFilter(12000.0, 3000.0, 3125.0,
+    //NXDN 4800 and Type-D pass and stop.  The 600 Hz transition takes 41 taps at 12 kHz in place of 189 for 3000/3125,
+    //and decodes as well or better at 4 to 25 dB SNR, at carrier offsets to +/-1 kHz and against a neighbor 6.25 kHz
+    //away.  Past about 1.5 kHz of offset the decoder fails with any filter width.
+    private static final ChannelSpecification CHANNEL_4800 = new ChannelSpecification(12000.0, 6250, 2800.0, 3400.0,
+        NXDNDecoder.getChannelFilter(12000.0, 2800.0, 3400.0,
             TransmissionMode.M4800.getSymbolRate()));
     private static final ChannelSpecification CHANNEL_9600 = new ChannelSpecification(24000.0, 12500, 5200.0, 6250.0,
         NXDNDecoder.getChannelFilter(24000.0, 5200.0, 6250.0,
