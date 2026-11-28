@@ -21,7 +21,7 @@ package io.github.dsheirer.dsp.fft;
 import jdk.incubator.vector.FloatVector;
 
 /**
- * Vector (SIMD) complex FFT, using butterflies that run across the columns of a matrix (ColumnFFT).
+ * Vector (SIMD) complex FFT, using butterflies that run across the columns of a matrix (ColumnFFT128).
  *
  * A batch of small transforms (below MINIMUM_UNBATCHED_SIZE) is computed a strip of blocks at a time: the strip's
  * blocks are copied side by side as the columns of a matrix, so each butterfly runs across the blocks, with no twiddle
@@ -36,8 +36,13 @@ import jdk.incubator.vector.FloatVector;
  * so single transforms use the mixed radix FFT.
  *
  * The inverse is the forward transform with the inphase and quadrature parts swapped on the way in and out.
+ *
+ * 128-bit vectors (FloatVector.SPECIES_128).  VectorComplexFFT256, ColumnFFT256 and VectorMoves256 are the same code
+ * with 256-bit vectors, and calibration selects the faster width for the CPU (ComplexFFTCalibration).  The vector
+ * species has to be a constant for the vector operations to compile to SIMD instructions, so each width is its own
+ * class.  Keep the copies the same apart from the width.
  */
-public class VectorComplexFFT extends ComplexFFT
+public class VectorComplexFFT128 extends ComplexFFT
 {
     /**
      * Smallest size where a single four-step transform is faster than the mixed radix FFT.
@@ -55,7 +60,7 @@ public class VectorComplexFFT extends ComplexFFT
      * apart in memory, which is slower (measured).
      */
     private static final int STRIP_ELEMENTS = 50000;
-    private static final int LANES = FloatVector.SPECIES_PREFERRED.length();
+    private static final int LANES = FloatVector.SPECIES_128.length();
     /**
      * Target number of elements in a strip of a batch, and the fewest and most blocks in a strip.  The block counts
      * are a whole number of vectors so that the vector loops have no scalar tail.
@@ -63,13 +68,6 @@ public class VectorComplexFFT extends ComplexFFT
     private static final int BATCH_ELEMENTS = 16384;
     private static final int BATCH_MINIMUM_WIDTH = Math.max(8, LANES);
     private static final int BATCH_MAXIMUM_WIDTH = 64;
-
-    /**
-     * Fewest float lanes in the CPU's preferred vector for the vector FFT to be used.  With 2 lanes (64-bit vectors,
-     * as on 32-bit ARM) it has little to gain over the mixed radix FFT, and the 32-bit ARM JVM (JDK 27) crashes or
-     * miscalculates in the compiled butterflies.
-     */
-    private static final int MINIMUM_LANES = 4;
 
     private final float mScale;
     private final MixedRadixComplexFFT mMixedRadix;
@@ -81,7 +79,7 @@ public class VectorComplexFFT extends ComplexFFT
      * @param size of the transform in complex samples, with no prime factors other than 2, 3 and 5
      * @throws IllegalArgumentException if the size is not supported
      */
-    public VectorComplexFFT(int size)
+    public VectorComplexFFT128(int size)
     {
         this(size, size >= MINIMUM_FOUR_STEP_SIZE);
     }
@@ -92,7 +90,7 @@ public class VectorComplexFFT extends ComplexFFT
      * @param fourStep true to use the four-step transform for single transforms of any size that it supports, or
      * false to use the mixed radix FFT
      */
-    VectorComplexFFT(int size, boolean fourStep)
+    VectorComplexFFT128(int size, boolean fourStep)
     {
         super(size);
         fourStep &= FourStep.isSupported(size);
@@ -103,12 +101,14 @@ public class VectorComplexFFT extends ComplexFFT
     }
 
     /**
-     * Indicates if this CPU's preferred vector is wide enough for the vector FFT.  The factory and the calibration use
-     * the scalar FFT when it is not.
+     * Indicates if the CPU runs 128-bit vectors natively: its preferred vector is at least 128 bits.  A vector wider
+     * than the CPU's is emulated and many times slower.  The factory and the calibration use the scalar FFT where
+     * neither width is supported, including 64-bit vectors (as on 32-bit ARM), where the vector FFT has little to gain
+     * over the mixed radix FFT and the 32-bit ARM JVM (JDK 27) crashes or miscalculates in the compiled butterflies.
      */
     public static boolean isVectorSupported()
     {
-        return LANES >= MINIMUM_LANES;
+        return FloatVector.SPECIES_PREFERRED.vectorBitSize() >= 128;
     }
 
     /**
@@ -206,8 +206,8 @@ public class VectorComplexFFT extends ComplexFFT
         private final int mColumns;
         private final int mStrip1;
         private final int mStrip2;
-        private final ColumnFFT mStep1;
-        private final ColumnFFT mStep2;
+        private final ColumnFFT128 mStep1;
+        private final ColumnFFT128 mStep2;
         private final float[] mTwiddleI;
         private final float[] mTwiddleQ;
         private final float[] mI;
@@ -225,8 +225,8 @@ public class VectorComplexFFT extends ComplexFFT
             mColumns = size / mRows;
             mStrip1 = getStripWidth(mColumns, mRows);
             mStrip2 = getStripWidth(mRows, mColumns);
-            mStep1 = new ColumnFFT(mRows);
-            mStep2 = new ColumnFFT(mColumns);
+            mStep1 = new ColumnFFT128(mRows);
+            mStep2 = new ColumnFFT128(mColumns);
 
             //Twiddles stored in input matrix order (k1, n2) so that a strip reads them contiguously
             mTwiddleI = new float[size];
@@ -305,9 +305,9 @@ public class VectorComplexFFT extends ComplexFFT
             final float[] i = inverse ? mQ : mI;
             final float[] q = inverse ? mI : mQ;
 
-            VectorMoves.deinterleave(samples, offset, i, q, 0, size);
+            VectorMoves128.deinterleave(samples, offset, i, q, 0, size);
             transform(mI, mQ);
-            VectorMoves.interleave(i, q, 0, gain, samples, offset, size);
+            VectorMoves128.interleave(i, q, 0, gain, samples, offset, size);
         }
 
         /**
@@ -335,8 +335,8 @@ public class VectorComplexFFT extends ComplexFFT
                     mStep1.multiply(stripI, stripQ, k1 * strip, mTwiddleI, mTwiddleQ, k1 * columns + c0, strip);
                 }
 
-                VectorMoves.transpose(stripI, 0, strip, workI, c0 * rows, rows, rows, strip);
-                VectorMoves.transpose(stripQ, 0, strip, workQ, c0 * rows, rows, rows, strip);
+                VectorMoves128.transpose(stripI, 0, strip, workI, c0 * rows, rows, rows, strip);
+                VectorMoves128.transpose(stripQ, 0, strip, workQ, c0 * rows, rows, rows, strip);
             }
 
             //Step 2: transform the columns of the work matrix a strip at a time, into the caller's arrays
@@ -356,7 +356,7 @@ public class VectorComplexFFT extends ComplexFFT
     {
         private final int mSize;
         private final int mWidth;
-        private final ColumnFFT mFFT;
+        private final ColumnFFT128 mFFT;
         private final float[] mI;
         private final float[] mQ;
         private final float[][] mWork;
@@ -366,7 +366,7 @@ public class VectorComplexFFT extends ComplexFFT
             mSize = size;
             mWidth = Math.clamp(BATCH_ELEMENTS / size / BATCH_MINIMUM_WIDTH * BATCH_MINIMUM_WIDTH,
                 BATCH_MINIMUM_WIDTH, BATCH_MAXIMUM_WIDTH);
-            mFFT = new ColumnFFT(size);
+            mFFT = new ColumnFFT128(size);
             int length = size * mWidth;
             mI = new float[length];
             mQ = new float[length];

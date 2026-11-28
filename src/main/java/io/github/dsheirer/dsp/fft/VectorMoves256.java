@@ -27,12 +27,12 @@ import jdk.incubator.vector.VectorSpecies;
  *
  * The lane moves are two-vector selects (selectFrom): zip (interleave the lower or upper halves of two vectors) and
  * unzip (the even or odd lanes of two vectors).  They are written as selectFrom calls rather than small helper
- * methods: the JIT can leave a helper out of a large method (NodeCountInliningCutoff), which boxes its vectors.  A transpose of a LANES x LANES block is log2(LANES) rounds of zips, written out
- * for 4 and 8 lanes.  Other widths use the scalar loops for transposes.
+ * methods: the JIT can leave a helper out of a large method (NodeCountInliningCutoff), which boxes its vectors.  A
+ * transpose of an 8 x 8 block (256-bit vectors, see VectorComplexFFT256) is 3 rounds of zips, written out.
  */
-final class VectorMoves
+final class VectorMoves256
 {
-    private static final VectorSpecies<Float> SPECIES = FloatVector.SPECIES_PREFERRED;
+    private static final VectorSpecies<Float> SPECIES = FloatVector.SPECIES_256;
     private static final int LANES = SPECIES.length();
     private static final FloatVector ZIP_LO;
     private static final FloatVector ZIP_HI;
@@ -70,7 +70,7 @@ final class VectorMoves
         REVERSE = indexes(reverse);
     }
 
-    private VectorMoves()
+    private VectorMoves256()
     {
     }
 
@@ -138,80 +138,39 @@ final class VectorMoves
     }
 
     /**
-     * Indicates if the transposes are vectorized at this vector width.
-     */
-    static boolean isTransposeVectorized()
-    {
-        return LANES == 4 || LANES == 8;
-    }
-
-    /**
      * Transpose: d[dBase + c * dStride + r] = s[sBase + r * sStride + c] for r < rows and c < columns.
      */
     static void transpose(float[] s, int sBase, int sStride, float[] d, int dBase, int dStride, int rows,
                           int columns)
     {
-        int r0 = 0;
+        int fullRows = rows - rows % LANES;
+        int fullColumns = columns - columns % LANES;
 
-        if(isTransposeVectorized())
+        for(int r = 0; r < fullRows; r += LANES)
         {
-            int fullRows = rows - rows % LANES;
-            int fullColumns = columns - columns % LANES;
-
-            for(int r = 0; r < fullRows; r += LANES)
+            for(int c = 0; c < fullColumns; c += LANES)
             {
-                for(int c = 0; c < fullColumns; c += LANES)
-                {
-                    if(LANES == 4)
-                    {
-                        transpose4(s, sBase + r * sStride + c, sStride, d, dBase + c * dStride + r, dStride);
-                    }
-                    else
-                    {
-                        transpose8(s, sBase + r * sStride + c, sStride, d, dBase + c * dStride + r, dStride);
-                    }
-                }
-
-                //Columns that are not a whole block
-                for(int c = fullColumns; c < columns; c++)
-                {
-                    for(int x = r; x < r + LANES; x++)
-                    {
-                        d[dBase + c * dStride + x] = s[sBase + x * sStride + c];
-                    }
-                }
+                transpose8(s, sBase + r * sStride + c, sStride, d, dBase + c * dStride + r, dStride);
             }
 
-            r0 = fullRows;
+            //Columns that are not a whole block
+            for(int c = fullColumns; c < columns; c++)
+            {
+                for(int x = r; x < r + LANES; x++)
+                {
+                    d[dBase + c * dStride + x] = s[sBase + x * sStride + c];
+                }
+            }
         }
 
         //Rows that are not a whole block
         for(int c = 0; c < columns; c++)
         {
-            for(int r = r0; r < rows; r++)
+            for(int r = fullRows; r < rows; r++)
             {
                 d[dBase + c * dStride + r] = s[sBase + r * sStride + c];
             }
         }
-    }
-
-    /**
-     * Transposes a 4 x 4 block: d[d0 + c * ds + r] = s[s0 + r * ss + c].
-     */
-    private static void transpose4(float[] s, int s0, int ss, float[] d, int d0, int ds)
-    {
-        FloatVector a0 = FloatVector.fromArray(SPECIES, s, s0);
-        FloatVector a1 = FloatVector.fromArray(SPECIES, s, s0 + ss);
-        FloatVector a2 = FloatVector.fromArray(SPECIES, s, s0 + 2 * ss);
-        FloatVector a3 = FloatVector.fromArray(SPECIES, s, s0 + 3 * ss);
-        FloatVector b0 = ZIP_LO.selectFrom(a0, a2);
-        FloatVector b1 = ZIP_HI.selectFrom(a0, a2);
-        FloatVector b2 = ZIP_LO.selectFrom(a1, a3);
-        FloatVector b3 = ZIP_HI.selectFrom(a1, a3);
-        ZIP_LO.selectFrom(b0, b2).intoArray(d, d0);
-        ZIP_HI.selectFrom(b0, b2).intoArray(d, d0 + ds);
-        ZIP_LO.selectFrom(b1, b3).intoArray(d, d0 + 2 * ds);
-        ZIP_HI.selectFrom(b1, b3).intoArray(d, d0 + 3 * ds);
     }
 
     /**

@@ -51,11 +51,11 @@ public class RealFFT
     private final float[] mOdd;
     private final FloatFFT_1D mJTransforms;
     /**
-     * True when the complex FFT is the vector four-step FFT, which also uses the vector data moves and split step.
-     * Below that size the complex FFT is the scalar mixed radix FFT, and the few vector iterations per call would only
-     * be slow to compile.
+     * Vector width in bits (128 or 256) when the complex FFT is the vector four-step FFT, which also uses the vector
+     * data moves and split step of the same width, or 0.  Below the four-step size the complex FFT is the scalar mixed
+     * radix FFT, and the few vector iterations per call would only be slow to compile.
      */
-    private final boolean mVector;
+    private final int mVectorWidth;
 
     /**
      * Constructs an instance that uses the implementation selected by calibration.
@@ -99,7 +99,18 @@ public class RealFFT
 
         mEven = new float[half];
         mOdd = new float[half];
-        mVector = mFFT instanceof VectorComplexFFT && half >= VectorComplexFFT.MINIMUM_FOUR_STEP_SIZE;
+        if(mFFT instanceof VectorComplexFFT256 && half >= VectorComplexFFT256.MINIMUM_FOUR_STEP_SIZE)
+        {
+            mVectorWidth = 256;
+        }
+        else if(mFFT instanceof VectorComplexFFT128 && half >= VectorComplexFFT128.MINIMUM_FOUR_STEP_SIZE)
+        {
+            mVectorWidth = 128;
+        }
+        else
+        {
+            mVectorWidth = 0;
+        }
     }
 
     /**
@@ -137,11 +148,19 @@ public class RealFFT
         final float[] even = mEven;
         final float[] odd = mOdd;
 
-        if(mVector)
+        if(mVectorWidth == 256)
         {
-            VectorMoves.deinterleave(samples, 0, even, odd, 0, half);
+            VectorMoves256.deinterleave(samples, 0, even, odd, 0, half);
             forward(even, odd);
-            VectorMoves.interleave(even, odd, 0, 1.0f, samples, 0, half);
+            VectorMoves256.interleave(even, odd, 0, 1.0f, samples, 0, half);
+            return;
+        }
+
+        if(mVectorWidth == 128)
+        {
+            VectorMoves128.deinterleave(samples, 0, even, odd, 0, half);
+            forward(even, odd);
+            VectorMoves128.interleave(even, odd, 0, 1.0f, samples, 0, half);
             return;
         }
 
@@ -180,9 +199,13 @@ public class RealFFT
 
         int k = 1;
 
-        if(mVector)
+        if(mVectorWidth == 256)
         {
-            k = VectorMoves.realSplit(even, odd, cos, sin, half);
+            k = VectorMoves256.realSplit(even, odd, cos, sin, half);
+        }
+        else if(mVectorWidth == 128)
+        {
+            k = VectorMoves128.realSplit(even, odd, cos, sin, half);
         }
 
         for(; k <= half / 2; k++)

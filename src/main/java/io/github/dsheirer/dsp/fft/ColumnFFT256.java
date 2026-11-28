@@ -24,8 +24,8 @@ import jdk.incubator.vector.VectorSpecies;
 /**
  * Batch of equal length forward complex FFTs over split (separate inphase and quadrature) arrays, one FFT per column
  * of a row-major matrix, where each FFT runs down a column.  Every butterfly operates on whole rows, so the inner
- * loops run over contiguous rows no matter the stage, and are vectorized across the columns with the CPU's preferred
- * vector width.  The number of columns is always a whole number of vectors.
+ * loops run over contiguous rows no matter the stage, and are vectorized across the columns with 256-bit vectors (see
+ * VectorComplexFFT256).  The number of columns is always a whole number of vectors.
  *
  * Self-sorting (Stockham) decimation in frequency stages of radix 4, 2, 5 and 3 move the data between the caller's
  * arrays and work strips, so the output is in natural order with no bit reversal.  The forward transform uses the
@@ -33,9 +33,9 @@ import jdk.incubator.vector.VectorSpecies;
  *
  * Instances keep no per-transform state and allocate nothing per transform: the caller provides the work strips.
  */
-class ColumnFFT
+class ColumnFFT256
 {
-    private static final VectorSpecies<Float> SPECIES = FloatVector.SPECIES_PREFERRED;
+    private static final VectorSpecies<Float> SPECIES = FloatVector.SPECIES_256;
     private static final int LANES = SPECIES.length();
     private static final double TWO_PI = 2.0 * Math.PI;
     private static final float C3 = -0.5f;
@@ -57,7 +57,7 @@ class ColumnFFT
      * @param length of each FFT (number of rows), with no prime factors other than 2, 3 and 5
      * @throws IllegalArgumentException if the length is not supported
      */
-    public ColumnFFT(int length)
+    public ColumnFFT256(int length)
     {
         if(!MixedRadixComplexFFT.isSupported(length))
         {

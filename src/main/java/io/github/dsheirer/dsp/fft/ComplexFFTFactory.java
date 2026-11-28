@@ -83,17 +83,30 @@ public class ComplexFFTFactory
      * Creates the complex FFT implementation.
      *
      * Calibration creates its candidates with this method so that it measures exactly what the application uses.
-     * @param implementation to create.  VECTOR_SIMD_PREFERRED creates the vector FFT on a CPU that supports it (see
-     * VectorComplexFFT.isVectorSupported()).  Any other implementation, including UNCALIBRATED, creates the scalar FFT.
+     * @param implementation to create.  VECTOR_SIMD_128 and VECTOR_SIMD_256 create the vector FFT of that width
+     * (VectorComplexFFT128 or VectorComplexFFT256) on a CPU that runs that width natively (isVectorSupported()), and
+     * VECTOR_SIMD_PREFERRED creates the wider of the two that the CPU runs natively.  Any other implementation,
+     * including UNCALIBRATED, and a width that the CPU doesn't run natively create the scalar FFT.
      * @param size of the transform in complex samples, with no prime factors other than 2, 3 and 5
      * @param scalar FFT to use for the scalar implementation
      * @throws IllegalArgumentException if the size is not supported
      */
     public static ComplexFFT getComplexFFT(Implementation implementation, int size, Scalar scalar)
     {
-        if(implementation == Implementation.VECTOR_SIMD_PREFERRED && VectorComplexFFT.isVectorSupported())
+        if(implementation == Implementation.VECTOR_SIMD_PREFERRED)
         {
-            return new VectorComplexFFT(size);
+            implementation = VectorComplexFFT256.isVectorSupported() ? Implementation.VECTOR_SIMD_256 :
+                Implementation.VECTOR_SIMD_128;
+        }
+
+        if(implementation == Implementation.VECTOR_SIMD_256 && VectorComplexFFT256.isVectorSupported())
+        {
+            return new VectorComplexFFT256(size);
+        }
+
+        if(implementation == Implementation.VECTOR_SIMD_128 && VectorComplexFFT128.isVectorSupported())
+        {
+            return new VectorComplexFFT128(size);
         }
 
         return getScalarFFT(size, scalar);

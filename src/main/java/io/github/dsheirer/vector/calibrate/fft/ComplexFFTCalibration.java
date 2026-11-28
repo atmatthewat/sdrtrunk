@@ -20,10 +20,12 @@ package io.github.dsheirer.vector.calibrate.fft;
 
 import io.github.dsheirer.dsp.fft.ComplexFFT;
 import io.github.dsheirer.dsp.fft.ComplexFFTFactory;
-import io.github.dsheirer.dsp.fft.VectorComplexFFT;
+import io.github.dsheirer.dsp.fft.VectorComplexFFT128;
+import io.github.dsheirer.dsp.fft.VectorComplexFFT256;
 import io.github.dsheirer.vector.calibrate.Calibration;
 import io.github.dsheirer.vector.calibrate.CalibrationType;
 import io.github.dsheirer.vector.calibrate.Implementation;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -57,14 +59,26 @@ public class ComplexFFTCalibration extends Calibration
         return TOLERANCE;
     }
 
+    /**
+     * The scalar FFT and each vector width that the CPU runs natively: the CPU's preferred width isn't always the
+     * fastest one.  A width wider than the CPU's is emulated and many times slower, so it isn't a candidate.
+     */
     @Override protected List<Candidate> getCandidates()
     {
-        if(!VectorComplexFFT.isVectorSupported())
+        List<Candidate> candidates = new ArrayList<>();
+        candidates.add(candidate(Implementation.SCALAR));
+
+        if(VectorComplexFFT128.isVectorSupported())
         {
-            return List.of(candidate(Implementation.SCALAR));
+            candidates.add(candidate(Implementation.VECTOR_SIMD_128));
         }
 
-        return List.of(candidate(Implementation.SCALAR), candidate(Implementation.VECTOR_SIMD_PREFERRED));
+        if(VectorComplexFFT256.isVectorSupported())
+        {
+            candidates.add(candidate(Implementation.VECTOR_SIMD_256));
+        }
+
+        return candidates;
     }
 
     private Candidate candidate(Implementation implementation)

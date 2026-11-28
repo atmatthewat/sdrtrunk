@@ -25,10 +25,52 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * The vector data moves match the scalar loops bit for bit, including the partial vectors and blocks at the ends.
+ * The vector data moves (VectorMoves128 and VectorMoves256) match the scalar loops bit for bit, including the partial
+ * vectors and blocks at the ends.  Both widths run wherever the 128-bit vector FFT is supported: a width wider than
+ * the CPU's is emulated, which is slow but exact.
  */
 public class VectorMovesTest
 {
+    private static final int[] WIDTHS = {128, 256};
+
+    private static void deinterleave(int width, float[] samples, int offset, float[] i, float[] q, int base, int count)
+    {
+        if(width == 128)
+        {
+            VectorMoves128.deinterleave(samples, offset, i, q, base, count);
+        }
+        else
+        {
+            VectorMoves256.deinterleave(samples, offset, i, q, base, count);
+        }
+    }
+
+    private static void interleave(int width, float[] i, float[] q, int base, float gain, float[] samples, int offset,
+                                   int count)
+    {
+        if(width == 128)
+        {
+            VectorMoves128.interleave(i, q, base, gain, samples, offset, count);
+        }
+        else
+        {
+            VectorMoves256.interleave(i, q, base, gain, samples, offset, count);
+        }
+    }
+
+    private static void transpose(int width, float[] s, int sBase, int sStride, float[] d, int dBase, int dStride,
+                                  int rows, int columns)
+    {
+        if(width == 128)
+        {
+            VectorMoves128.transpose(s, sBase, sStride, d, dBase, dStride, rows, columns);
+        }
+        else
+        {
+            VectorMoves256.transpose(s, sBase, sStride, d, dBase, dStride, rows, columns);
+        }
+    }
+
     private static float[] random(int length, Random random)
     {
         float[] values = new float[length];
@@ -44,9 +86,17 @@ public class VectorMovesTest
     @Test
     void interleaveMatchesScalar()
     {
-        assumeTrue(VectorComplexFFT.isVectorSupported());
+        assumeTrue(VectorComplexFFT128.isVectorSupported());
         Random random = new Random(1);
 
+        for(int width : WIDTHS)
+        {
+            checkInterleave(width, random);
+        }
+    }
+
+    private static void checkInterleave(int width, Random random)
+    {
         for(int count : new int[]{0, 1, 3, 4, 7, 8, 9, 16, 17, 31, 96, 100, 2187})
         {
             for(int offset : new int[]{0, 1, 5})
@@ -64,9 +114,9 @@ public class VectorMovesTest
                     expectedQ[base + x] = samples[offset + 2 * x + 1];
                 }
 
-                VectorMoves.deinterleave(samples, offset, i, q, base, count);
-                assertArrayEquals(expectedI, i, "deinterleave inphase count " + count);
-                assertArrayEquals(expectedQ, q, "deinterleave quadrature count " + count);
+                deinterleave(width, samples, offset, i, q, base, count);
+                assertArrayEquals(expectedI, i, width + " deinterleave inphase count " + count);
+                assertArrayEquals(expectedQ, q, width + " deinterleave quadrature count " + count);
 
                 float gain = 0.37f;
                 float[] expected = random(samples.length, random);
@@ -78,8 +128,8 @@ public class VectorMovesTest
                     expected[offset + 2 * x + 1] = q[base + x] * gain;
                 }
 
-                VectorMoves.interleave(i, q, base, gain, actual, offset, count);
-                assertArrayEquals(expected, actual, "interleave count " + count);
+                interleave(width, i, q, base, gain, actual, offset, count);
+                assertArrayEquals(expected, actual, width + " interleave count " + count);
             }
         }
     }
@@ -87,9 +137,17 @@ public class VectorMovesTest
     @Test
     void transposeMatchesScalar()
     {
-        assumeTrue(VectorComplexFFT.isVectorSupported());
+        assumeTrue(VectorComplexFFT128.isVectorSupported());
         Random random = new Random(2);
 
+        for(int width : WIDTHS)
+        {
+            checkTranspose(width, random);
+        }
+    }
+
+    private static void checkTranspose(int width, Random random)
+    {
         for(int rows : new int[]{1, 3, 4, 5, 8, 12, 17, 64, 96})
         {
             for(int columns : new int[]{1, 4, 7, 8, 9, 16, 33, 100})
@@ -110,8 +168,8 @@ public class VectorMovesTest
                     }
                 }
 
-                VectorMoves.transpose(s, sBase, sStride, actual, dBase, dStride, rows, columns);
-                assertArrayEquals(expected, actual, "transpose rows " + rows + " columns " + columns);
+                transpose(width, s, sBase, sStride, actual, dBase, dStride, rows, columns);
+                assertArrayEquals(expected, actual, width + " transpose rows " + rows + " columns " + columns);
             }
         }
     }

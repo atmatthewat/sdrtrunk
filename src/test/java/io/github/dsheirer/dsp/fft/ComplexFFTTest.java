@@ -21,7 +21,7 @@ package io.github.dsheirer.dsp.fft;
 import io.github.dsheirer.vector.calibrate.Implementation;
 import java.lang.management.ManagementFactory;
 import java.util.Random;
-import jdk.incubator.vector.FloatVector;
+import java.util.function.IntFunction;
 import org.jtransforms.fft.FloatFFT_1D;
 import org.junit.jupiter.api.Test;
 
@@ -44,15 +44,26 @@ public class ComplexFFTTest
      */
     private static final double RELATIVE_TOLERANCE = 2e-6;
     /**
-     * Implementations under test: both scalar FFTs, vector as the factory creates it, and vector using the four-step
-     * transform for single transforms of every size.
+     * Implementations under test: both scalar FFTs, and each vector width as the factory would create it and using the
+     * four-step transform for single transforms of every size.  The vector variants are created directly, so that both
+     * widths are tested on any CPU that supports the 128-bit vector FFT: a width wider than the CPU's is emulated,
+     * which is slow but exact.
      */
     private enum Variant
     {
-        SCALAR,
-        SCALAR_JTRANSFORMS,
-        VECTOR,
-        VECTOR_FOUR_STEP;
+        SCALAR(Implementation.SCALAR),
+        SCALAR_JTRANSFORMS(Implementation.SCALAR),
+        VECTOR_128(Implementation.VECTOR_SIMD_128),
+        VECTOR_128_FOUR_STEP(Implementation.VECTOR_SIMD_128),
+        VECTOR_256(Implementation.VECTOR_SIMD_256),
+        VECTOR_256_FOUR_STEP(Implementation.VECTOR_SIMD_256);
+
+        private final Implementation mImplementation;
+
+        Variant(Implementation implementation)
+        {
+            mImplementation = implementation;
+        }
 
         ComplexFFT create(int size)
         {
@@ -61,22 +72,46 @@ public class ComplexFFTTest
                 case SCALAR -> ComplexFFTFactory.getComplexFFT(Implementation.SCALAR, size);
                 case SCALAR_JTRANSFORMS -> ComplexFFTFactory.getComplexFFT(Implementation.SCALAR, size,
                     ComplexFFTFactory.Scalar.JTRANSFORMS);
-                case VECTOR -> ComplexFFTFactory.getComplexFFT(Implementation.VECTOR_SIMD_PREFERRED, size);
-                case VECTOR_FOUR_STEP -> new VectorComplexFFT(size, true);
+                case VECTOR_128 -> new VectorComplexFFT128(size);
+                case VECTOR_128_FOUR_STEP -> new VectorComplexFFT128(size, true);
+                case VECTOR_256 -> new VectorComplexFFT256(size);
+                case VECTOR_256_FOUR_STEP -> new VectorComplexFFT256(size, true);
             };
+        }
+
+        /**
+         * Implementation that the factory and the real FFT use for this variant.
+         */
+        Implementation getImplementation()
+        {
+            return mImplementation;
         }
 
         boolean isScalar()
         {
-            return this == SCALAR || this == SCALAR_JTRANSFORMS;
+            return mImplementation == Implementation.SCALAR;
+        }
+
+        /**
+         * Indicates if the CPU runs this variant's vector width natively (always true for the scalar variants).
+         */
+        boolean isNative()
+        {
+            return switch(mImplementation)
+            {
+                case VECTOR_SIMD_128 -> VectorComplexFFT128.isVectorSupported();
+                case VECTOR_SIMD_256 -> VectorComplexFFT256.isVectorSupported();
+                default -> true;
+            };
         }
     }
 
     /**
-     * Variants that this CPU can run: the vector classes are only created directly where the vector FFT is supported.
+     * Variants that this CPU can run: the vector classes are only created directly where the 128-bit vector FFT is
+     * supported.
      */
-    private static final Variant[] VARIANTS = VectorComplexFFT.isVectorSupported() ? Variant.values() :
-        new Variant[]{Variant.SCALAR, Variant.SCALAR_JTRANSFORMS, Variant.VECTOR};
+    private static final Variant[] VARIANTS = VectorComplexFFT128.isVectorSupported() ? Variant.values() :
+        new Variant[]{Variant.SCALAR, Variant.SCALAR_JTRANSFORMS};
 
     /**
      * Sizes covering each radix, rows of length one, small sizes, the polyphase channelizer channel counts, the noise
@@ -471,13 +506,58 @@ public class ComplexFFTTest
     @Test
     void columnFFTMatchesReferenceDFT()
     {
-        assumeTrue(VectorComplexFFT.isVectorSupported());
+        assumeTrue(VectorComplexFFT128.isVectorSupported());
         Random random = new Random(9);
-        int lanes = FloatVector.SPECIES_PREFERRED.length();
 
+        checkColumnFFT(4, length -> {
+            ColumnFFT128 fft = new ColumnFFT128(length);
+            return new ColumnTransform()
+            {
+                @Override public void transform(float[] i, float[] q, int width, float[][] work)
+                {
+                    fft.transform(i, q, width, work);
+                }
+
+                @Override public void multiply(float[] xi, float[] xq, int offset, float[] wi, float[] wq, int wOffset,
+                                               int length)
+                {
+                    fft.multiply(xi, xq, offset, wi, wq, wOffset, length);
+                }
+            };
+        }, random);
+        checkColumnFFT(8, length -> {
+            ColumnFFT256 fft = new ColumnFFT256(length);
+            return new ColumnTransform()
+            {
+                @Override public void transform(float[] i, float[] q, int width, float[][] work)
+                {
+                    fft.transform(i, q, width, work);
+                }
+
+                @Override public void multiply(float[] xi, float[] xq, int offset, float[] wi, float[] wq, int wOffset,
+                                               int length)
+                {
+                    fft.multiply(xi, xq, offset, wi, wq, wOffset, length);
+                }
+            };
+        }, random);
+    }
+
+    /**
+     * ColumnFFT128 or ColumnFFT256, for checkColumnFFT().
+     */
+    private interface ColumnTransform
+    {
+        void transform(float[] i, float[] q, int width, float[][] work);
+
+        void multiply(float[] xi, float[] xq, int offset, float[] wi, float[] wq, int wOffset, int length);
+    }
+
+    private static void checkColumnFFT(int lanes, IntFunction<ColumnTransform> factory, Random random)
+    {
         for(int length : new int[]{1, 2, 3, 4, 5, 6, 8, 12, 15, 16, 20, 25, 27, 32, 60, 64, 80, 96, 100, 125, 128, 400})
         {
-            ColumnFFT fft = new ColumnFFT(length);
+            ColumnTransform fft = factory.apply(length);
 
             for(int width = lanes; width <= 3 * lanes; width += lanes)
             {
@@ -501,7 +581,7 @@ public class ComplexFFTTest
                     }
 
                     assertCloseToReference(referenceDFT(samples, -1), actual,
-                        "length " + length + " width " + width + " column " + column);
+                        lanes + " lanes length " + length + " width " + width + " column " + column);
                 }
 
                 float[] twiddleI = randomSamples(width + 2, random);
@@ -587,7 +667,7 @@ public class ComplexFFTTest
             new FloatFFT_1D(size).realForward(jtransforms);
 
             for(Implementation implementation : new Implementation[]{Implementation.SCALAR,
-                Implementation.VECTOR_SIMD_PREFERRED})
+                Implementation.VECTOR_SIMD_128, Implementation.VECTOR_SIMD_256})
             {
                 float[] actual = real.clone();
                 new RealFFT(size, implementation).forward(actual);
@@ -639,6 +719,8 @@ public class ComplexFFTTest
         assertThrows(IllegalArgumentException.class,
             () -> ComplexFFTFactory.getComplexFFT(Implementation.VECTOR_SIMD_PREFERRED, 14));
         assertThrows(IllegalArgumentException.class,
+            () -> ComplexFFTFactory.getComplexFFT(Implementation.VECTOR_SIMD_128, 14));
+        assertThrows(IllegalArgumentException.class,
             () -> ComplexFFTFactory.getComplexFFT(Implementation.VECTOR_SIMD_256, 14));
         assertFalse(RealFFT.isSupported(1));
         assertFalse(RealFFT.isSupported(15));
@@ -651,7 +733,7 @@ public class ComplexFFTTest
     {
         //Scalar keeps each user's previous FFT: the mixed radix FFT, or JTransforms at power of two sizes
         for(Implementation scalar : new Implementation[]{Implementation.UNCALIBRATED, Implementation.SCALAR,
-            Implementation.VECTOR_SIMD_256})
+            Implementation.VECTOR_SIMD_64, Implementation.VECTOR_SIMD_512})
         {
             assertInstanceOf(MixedRadixComplexFFT.class, ComplexFFTFactory.getComplexFFT(scalar, 96));
             assertInstanceOf(MixedRadixComplexFFT.class, ComplexFFTFactory.getComplexFFT(scalar, 64));
@@ -661,13 +743,26 @@ public class ComplexFFTTest
                 ComplexFFTFactory.Scalar.JTRANSFORMS));
         }
 
-        //Where the vector FFT isn't supported, vector falls back to the same scalar FFTs
-        boolean vector = VectorComplexFFT.isVectorSupported();
-        Class<? extends ComplexFFT> mixedRadix = vector ? VectorComplexFFT.class : MixedRadixComplexFFT.class;
-        Class<? extends ComplexFFT> jtransforms = vector ? VectorComplexFFT.class : JTransformsComplexFFT.class;
-        assertInstanceOf(mixedRadix, ComplexFFTFactory.getComplexFFT(Implementation.VECTOR_SIMD_PREFERRED, 96));
-        assertInstanceOf(jtransforms, ComplexFFTFactory.getComplexFFT(Implementation.VECTOR_SIMD_PREFERRED, 4096,
-            ComplexFFTFactory.Scalar.JTRANSFORMS));
+        //Each vector width where the CPU runs it natively, and otherwise the same scalar FFTs.  Preferred is the wider
+        //of the two that the CPU runs natively.
+        boolean has128 = VectorComplexFFT128.isVectorSupported();
+        boolean has256 = VectorComplexFFT256.isVectorSupported();
+        assertFactory(Implementation.VECTOR_SIMD_128, has128 ? VectorComplexFFT128.class : null);
+        assertFactory(Implementation.VECTOR_SIMD_256, has256 ? VectorComplexFFT256.class : null);
+        assertFactory(Implementation.VECTOR_SIMD_PREFERRED, has256 ? VectorComplexFFT256.class :
+            has128 ? VectorComplexFFT128.class : null);
+    }
+
+    /**
+     * Asserts the class that the factory creates for the implementation, or the scalar FFTs where vector is null.
+     */
+    private static void assertFactory(Implementation implementation, Class<? extends ComplexFFT> vector)
+    {
+        Class<? extends ComplexFFT> mixedRadix = vector != null ? vector : MixedRadixComplexFFT.class;
+        Class<? extends ComplexFFT> jtransforms = vector != null ? vector : JTransformsComplexFFT.class;
+        assertInstanceOf(mixedRadix, ComplexFFTFactory.getComplexFFT(implementation, 96), implementation.name());
+        assertInstanceOf(jtransforms, ComplexFFTFactory.getComplexFFT(implementation, 4096,
+            ComplexFFTFactory.Scalar.JTRANSFORMS), implementation.name());
     }
 
     @Test
@@ -682,16 +777,14 @@ public class ComplexFFTTest
             for(Variant variant : VARIANTS)
             {
                 //JTransforms, which the scalar real FFT uses at power of two sizes, allocates when it uses its pool.
-                //Where the vector FFT isn't supported, the vector variants fall back to the scalar FFTs.
-                if((variant.isScalar() || !VectorComplexFFT.isVectorSupported()) && size >= 4096 &&
-                    Integer.bitCount(size) == 1)
+                //An emulated vector width (wider than the CPU's) allocates.
+                if((variant.isScalar() && size >= 4096 && Integer.bitCount(size) == 1) || !variant.isNative())
                 {
                     continue;
                 }
 
                 ComplexFFT fft = variant.create(size);
-                RealFFT realFFT = new RealFFT(size, variant.isScalar() ? Implementation.SCALAR :
-                    Implementation.VECTOR_SIMD_PREFERRED);
+                RealFFT realFFT = new RealFFT(size, variant.getImplementation());
                 float[] samples = randomSamples(size * 2 * 4, new Random(13));
                 float[] real = randomSamples(size, new Random(14));
 
